@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>切水果大作戰 - 隨機波浪版</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    #game-container {
+      position: relative;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.9), 0 0 15px rgba(255,255,255,0.1);
+      border-radius: 16px;
+      overflow: hidden;
+      border: 4px solid #3d2314;
+    }
+    canvas {
+      display: block;
+      cursor: crosshair;
+    }
+    .ui-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 20px;
+    }
+    .stats {
+      display: flex;
+      justify-content: space-between;
+      font-size: 28px;
+      font-weight: bold;
+      text-shadow: 2px 2px 5px rgba(0,0,0,0.9);
+    }
+    .timer-display {
+      color: #ffda79;
+    }
+    .game-over-screen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    .game-over-screen.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .game-over-screen h1 {
+      font-size: 52px;
+      margin: 0;
+      color: #2ed573;
+      text-shadow: 0 0 15px rgba(46,213,115,0.6);
+    }
+    .game-over-screen p {
+      font-size: 26px;
+      margin: 0;
+    }
+    .btn {
+      padding: 14px 36px;
+      font-size: 22px;
+      font-weight: bold;
+      color: #fff;
+      background: #2ed573;
+      border: none;
+      border-radius: 30px;
+      cursor: pointer;
+      box-shadow: 0 5px 15px rgba(46,213,115,0.4);
+      transition: transform 0.1s, background 0.2s;
+    }
+    .btn:hover {
+      background: #26af5f;
+      transform: scale(1.05);
+    }
+  </style>
+</head>
+<body>
+
+  <div id="game-container">
+    <canvas id="gameCanvas" width="800" height="750"></canvas>
+    
+    <div class="ui-overlay">
+      <div class="stats">
+        <div id="scoreDisplay">分數: 0</div>
+        <div id="timerDisplay" class="timer-display">時間: 03:00</div>
+      </div>
+    </div>
+
+    <div class="game-over-screen" id="gameOverScreen">
+      <h1>時間到！</h1>
+      <p id="finalScore">最終得分: 0</p>
+      <button class="btn" onclick="resetGame()">再玩一次</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // 遊戲狀態
+    let score = 0;
+    let totalTime = 180; // 3 分鐘
+    let timeRemaining = totalTime;
+    let isGameOver = false;
+    let timerInterval = null;
+
+    // 水果設定
+    const FRUIT_TYPES = [
+      { name: 'apple', color: '#ff4757', fleshColor: '#fff5cc', radius: 32, score: 10 },
+      { name: 'orange', color: '#ffa502', fleshColor: '#ffbe76', radius: 30, score: 10 },
+      { name: 'watermelon', color: '#1e824c', fleshColor: '#ff4757', radius: 48, score: 15 },
+      { name: 'banana', color: '#f1c40f', fleshColor: '#fef9e7', radius: 26, score: 10 },
+      { name: 'bomb', color: '#2f3542', radius: 25, isBomb: true }
+    ];
+
+    let items = [];         // 水果/炸彈
+    let slicedHalves = [];  // 切開的水果
+    let particles = [];     // 汁液粒子
+    let floatingTexts = []; // Combo 浮點文字
+    let mouseTrail = [];    // 刀光軌跡
+
+    let currentSliceHits = 0;
+
+    // Web Audio 音效
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playSound(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      if (type === 'cut') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(200, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+      } else if (type === 'combo') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
+      } else if (type === 'bomb') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.frequency.linearRampToValueAtTime(40, audioCtx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      }
+    }
+
+    function getProgress() {
+      return (totalTime - timeRemaining) / totalTime;
+    }
+
+    // 繪製背景場景 (木紋質感 + 暗角)
+    function drawBackground() {
+      const plankHeight = 50;
+      for (let y = 0; y < canvas.height; y += plankHeight) {
+        ctx.fillStyle = (Math.floor(y / plankHeight) % 2 === 0) ? '#4a2c11' : '#3d230d';
+        ctx.fillRect(0, y, canvas.width, plankHeight);
+
+        ctx.fillStyle = '#261405';
+        ctx.fillRect(0, y + plankHeight - 2, canvas.width, 2);
+      }
+
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < canvas.height; i += 12) {
+        ctx.beginPath();
+        ctx.moveTo(0, i + Math.sin(i) * 3);
+        ctx.lineTo(canvas.width, i + Math.cos(i) * 3);
+        ctx.stroke();
+      }
+
+      const gradient = ctx.createRadialGradient(
+        canvas.width / 2, canvas.height / 2, 200,
+        canvas.width / 2, canvas.height / 2, 500
+      );
+      gradient.addColorStop(0, 'rgba(0,0,0,0)');
+      gradient.addColorStop(1, 'rgba(0,0,0,0.65)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // 繪製水果圖案
+    function drawFruitPattern(ctx, type, radius) {
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+
+      if (type.name === 'apple') {
+        ctx.fillStyle = '#ff4757';
+        ctx.fill();
+        ctx.fillStyle = '#5c3d11';
+        ctx.fillRect(-2, -radius - 4, 4, 8);
+        ctx.beginPath();
+        ctx.ellipse(5, -radius - 2, 6, 3, Math.PI / 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#2ed573';
+        ctx.fill();
+      } else if (type.name === 'orange') {
+        ctx.fillStyle = '#ffa502';
+        ctx.fill();
+        ctx.fillStyle = '#e67e22';
+        ctx.beginPath();
+        ctx.arc(-radius * 0.3, -radius * 0.3, 3, 0, Math.PI * 2);
+        ctx.arc(radius * 0.4, radius * 0.2, 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (type.name === 'watermelon') {
+        ctx.fillStyle = '#1e824c';
+        ctx.fill();
+        ctx.strokeStyle = '#145a32';
+        ctx.lineWidth = 6;
+        for (let a = -Math.PI / 3; a <= Math.PI / 3; a += Math.PI / 3) {
+          ctx.beginPath();
+          ctx.arc(0, 0, radius - 3, a - 0.2, a + 0.2);
+          ctx.stroke();
+        }
+      } else if (type.name === 'banana') {
+        ctx.fillStyle = '#f1c40f';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radius * 1.3, radius * 0.7, Math.PI / 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#d4ac0d';
+        ctx.fillRect(-radius * 1.1, -2, 5, 5);
+      } else if (type.isBomb) {
+        ctx.fillStyle = '#2f3542';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#57606f';
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.moveTo(0, -radius);
+        ctx.quadraticCurveTo(10, -radius - 10, 15, -radius - 5);
+        ctx.strokeStyle = '#eccc68';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(15, -radius - 5, 4 + Math.random() * 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff4757';
+        ctx.fill();
+      }
+    }
+
+    // 繪製切開半顆水果
+    function drawSlicedHalf(ctx, half) {
+      const r = half.radius;
+      ctx.save();
+      ctx.beginPath();
+
+      if (half.side === 'left') {
+        ctx.arc(0, 0, r, Math.PI * 0.5, Math.PI * 1.5);
+      } else {
+        ctx.arc(0, 0, r, Math.PI * 1.5, Math.PI * 0.5);
+      }
+      ctx.closePath();
+
+      ctx.fillStyle = half.color;
+      ctx.fill();
+
+      ctx.beginPath();
+      if (half.side === 'left') {
+        ctx.arc(0, 0, r - 4, Math.PI * 0.5, Math.PI * 1.5);
+      } else {
+        ctx.arc(0, 0, r - 4, Math.PI * 1.5, Math.PI * 0.5);
+      }
+      ctx.closePath();
+      ctx.fillStyle = half.fleshColor || '#fff';
+      ctx.fill();
+
+      if (half.name === 'watermelon') {
+        ctx.fillStyle = '#000';
+        const seedOffsetX = half.side === 'left' ? -r * 0.4 : r * 0.4;
+        ctx.beginPath();
+        ctx.arc(seedOffsetX, -r * 0.2, 2.5, 0, Math.PI * 2);
+        ctx.arc(seedOffsetX * 0.7, r * 0.3, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (half.name === 'apple') {
+        ctx.fillStyle = '#5c3d11';
+        const seedX = half.side === 'left' ? -r * 0.2 : r * 0.2;
+        ctx.beginPath();
+        ctx.arc(seedX, 0, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    function spawnItem() {
+      if (isGameOver) return;
+
+      const progress = getProgress();
+      const isBomb = Math.random() < 0.15;
+      let type;
+      if (isBomb) {
+        type = FRUIT_TYPES.find(t => t.isBomb);
+      } else {
+        const fruitTypes = FRUIT_TYPES.filter(t => !t.isBomb);
+        type = fruitTypes[Math.floor(Math.random() * fruitTypes.length)];
+      }
+
+      const x = Math.random() * (canvas.width - 140) + 70;
+      const vx = (canvas.width / 2 - x) * (Math.random() * 0.008 + 0.003);
+      const baseVy = 12.0 + progress * 4.5;
+      const vy = -(Math.random() * 2 + baseVy);
+
+      items.push({
+        x: x,
+        y: canvas.height + type.radius,
+        vx: vx,
+        vy: vy,
+        radius: type.radius,
+        type: type,
+        color: type.color,
+        fleshColor: type.fleshColor,
+        isBomb: type.isBomb || false,
+        score: type.score || 0,
+        sliced: false,
+        rotation: Math.random() * Math.PI * 2,
+        vRot: (Math.random() - 0.5) * 0.08
+      });
+    }
+
+    function createHalfFruits(item) {
+      const angle = Math.random() * Math.PI;
+      const speed = 4.5;
+
+      slicedHalves.push({
+        name: item.type.name,
+        x: item.x,
+        y: item.y,
+        vx: item.vx - Math.cos(angle) * speed,
+        vy: item.vy - Math.sin(angle) * speed,
+        radius: item.radius,
+        color: item.color,
+        fleshColor: item.fleshColor,
+        rotation: item.rotation,
+        vRot: -0.15,
+        side: 'left'
+      });
+
+      slicedHalves.push({
+        name: item.type.name,
+        x: item.x,
+        y: item.y,
+        vx: item.vx + Math.cos(angle) * speed,
+        vy: item.vy + Math.sin(angle) * speed,
+        radius: item.radius,
+        color: item.color,
+        fleshColor: item.fleshColor,
+        rotation: item.rotation,
+        vRot: 0.15,
+        side: 'right'
+      });
+    }
+
+    function createSplatter(x, y, color) {
+      for (let i = 0; i < 18; i++) {
+        particles.push({
+          x: x,
+          y: y,
+          vx: (Math.random() - 0.5) * 12,
+          vy: (Math.random() - 0.5) * 12,
+          radius: Math.random() * 4 + 2,
+          color: color,
+          alpha: 1,
+          life: 0.025
+        });
+      }
+    }
+
+    function addFloatingText(x, y, text) {
+      floatingTexts.push({
+        x: x,
+        y: y,
+        text: text,
+        alpha: 1,
+        vy: -2
+      });
+    }
+
+    function update() {
+      if (isGameOver) return;
+
+      // 粒子
+      for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.alpha -= p.life;
+        if (p.alpha <= 0) particles.splice(i, 1);
+      }
+
+      // 文字
+      for (let i = floatingTexts.length - 1; i >= 0; i--) {
+        let ft = floatingTexts[i];
+        ft.y += ft.vy;
+        ft.alpha -= 0.02;
+        if (ft.alpha <= 0) floatingTexts.splice(i, 1);
+      }
+
+      // 被切開的水果
+      for (let i = slicedHalves.length - 1; i >= 0; i--) {
+        let half = slicedHalves[i];
+        half.x += half.vx;
+        half.y += half.vy;
+        half.vy += 0.22;
+        half.rotation += half.vRot;
+
+        if (half.y > canvas.height + 100) slicedHalves.splice(i, 1);
+      }
+
+      // 水果/炸彈
+      let sliceHitInThisFrame = 0;
+
+      for (let i = items.length - 1; i >= 0; i--) {
+        let item = items[i];
+        item.x += item.vx;
+        item.y += item.vy;
+        item.vy += 0.20;
+        item.rotation += item.vRot;
+
+        if (!item.sliced && mouseTrail.length > 1) {
+          const p1 = mouseTrail[mouseTrail.length - 1];
+          const p2 = mouseTrail[mouseTrail.length - 2];
+
+          if (checkLineCircleIntersection(p1, p2, item)) {
+            item.sliced = true;
+            if (item.isBomb) {
+              playSound('bomb');
+              score = Math.max(0, score - 20);
+              addFloatingText(item.x, item.y, '-20 分!');
+              createSplatter(item.x, item.y, '#ff4757');
+              items.splice(i, 1);
+              continue;
+            } else {
+              playSound('cut');
+              score += item.score;
+              sliceHitInThisFrame++;
+              currentSliceHits++;
+
+              createSplatter(item.x, item.y, item.fleshColor || item.color);
+              createHalfFruits(item);
+              items.splice(i, 1);
+              continue;
+            }
+          }
+        }
+
+        if (item.y > canvas.height + 60) {
+          items.splice(i, 1);
+        }
+      }
+
+      // Combo 判斷
+      if (currentSliceHits >= 3 && sliceHitInThisFrame > 0) {
+        const comboBonus = currentSliceHits * 5;
+        score += comboBonus;
+        playSound('combo');
+        const lastTrail = mouseTrail[mouseTrail.length - 1] || { x: canvas.width / 2, y: canvas.height / 2 };
+        addFloatingText(lastTrail.x, lastTrail.y, `${currentSliceHits}x COMBO! +${comboBonus}`);
+      }
+
+      document.getElementById('scoreDisplay').innerText = `分數: ${score}`;
+
+      if (mouseTrail.length > 0) {
+        mouseTrail.shift();
+      } else {
+        currentSliceHits = 0;
+      }
+    }
+
+    function checkLineCircleIntersection(p1, p2, circle) {
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len === 0) return false;
+
+      const u = ((circle.x - p1.x) * dx + (circle.y - p1.y) * dy) / (len * len);
+      const clampedU = Math.max(0, Math.min(1, u));
+
+      const nearestX = p1.x + clampedU * dx;
+      const nearestY = p1.y + clampedU * dy;
+
+      const distX = circle.x - nearestX;
+      const distY = circle.y - nearestY;
+
+      return (distX * distX + distY * distY) < (circle.radius * circle.radius);
+    }
+
+    function draw() {
+      drawBackground();
+
+      particles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+
+      slicedHalves.forEach(half => {
+        ctx.save();
+        ctx.translate(half.x, half.y);
+        ctx.rotate(half.rotation);
+        drawSlicedHalf(ctx, half);
+        ctx.restore();
+      });
+
+      items.forEach(item => {
+        ctx.save();
+        ctx.translate(item.x, item.y);
+        ctx.rotate(item.rotation);
+        drawFruitPattern(ctx, item.type, item.radius);
+        ctx.restore();
+      });
+
+      if (mouseTrail.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(mouseTrail[0].x, mouseTrail[0].y);
+        for (let i = 1; i < mouseTrail.length; i++) {
+          ctx.lineTo(mouseTrail[i].x, mouseTrail[i].y);
+        }
+        ctx.strokeStyle = '#00d2d3';
+        ctx.lineWidth = 7;
+        ctx.lineCap = 'round';
+        ctx.shadowColor = '#54a0ff';
+        ctx.shadowBlur = 15;
+        ctx.stroke();
+      }
+
+      floatingTexts.forEach(ft => {
+        ctx.save();
+        ctx.globalAlpha = ft.alpha;
+        ctx.font = 'bold 32px Segoe UI';
+        ctx.fillStyle = '#ffda79';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 4;
+        ctx.strokeText(ft.text, ft.x, ft.y);
+        ctx.fillText(ft.text, ft.x, ft.y);
+        ctx.restore();
+      });
+    }
+
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function startTimer() {
+      clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        if (!isGameOver) {
+          timeRemaining--;
+          updateTimerDisplay();
+
+          if (timeRemaining <= 0) {
+            endGame();
+          }
+        }
+      }, 1000);
+    }
+
+    function updateTimerDisplay() {
+      const minutes = Math.floor(timeRemaining / 60);
+      const seconds = timeRemaining % 60;
+      const formatted = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      document.getElementById('timerDisplay').innerText = `時間: ${formatted}`;
+    }
+
+    function endGame() {
+      isGameOver = true;
+      clearInterval(timerInterval);
+      document.getElementById('finalScore').innerText = `最終得分: ${score}`;
+      document.getElementById('gameOverScreen').classList.add('active');
+    }
+
+    function triggerInitialBurst() {
+      const initialCount = Math.floor(Math.random() * 3) + 4; // 4~6 個
+      for (let i = 0; i < initialCount; i++) {
+        setTimeout(() => spawnItem(), i * 120);
+      }
+    }
+
+    function resetGame() {
+      score = 0;
+      timeRemaining = totalTime;
+      items = [];
+      slicedHalves = [];
+      particles = [];
+      floatingTexts = [];
+      mouseTrail = [];
+      currentSliceHits = 0;
+      isGameOver = false;
+
+      document.getElementById('scoreDisplay').innerText = '分數: 0';
+      updateTimerDisplay();
+      document.getElementById('gameOverScreen').classList.remove('active');
+      
+      startTimer();
+      triggerInitialBurst();
+    }
+
+    function handleMove(x, y) {
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = x - rect.left;
+      const canvasY = y - rect.top;
+
+      mouseTrail.push({ x: canvasX, y: canvasY });
+      if (mouseTrail.length > 8) {
+        mouseTrail.shift();
+      }
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      handleMove(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      handleMove(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    // 隨機波浪輪替系統 (多/少/多/狂暴 交替)
+    function scheduleNextSpawn() {
+      const progress = getProgress();
+      
+      // 隨機選擇波浪模式
+      const waveTypes = ['LIGHT', 'MEDIUM', 'HEAVY', 'BURST'];
+      const currentWave = waveTypes[Math.floor(Math.random() * waveTypes.length)];
+
+      let count = 1;
+      let delay = 1500;
+
+      if (currentWave === 'LIGHT') {
+        count = Math.floor(Math.random() * 2) + 1; // 1~2 個
+        delay = Math.random() * 800 + 1000;
+      } else if (currentWave === 'MEDIUM') {
+        count = Math.floor(Math.random() * 2) + 3; // 3~4 個
+        delay = Math.random() * 1000 + 1200;
+      } else if (currentWave === 'HEAVY') {
+        count = Math.floor(Math.random() * 3) + 4; // 4~6 個
+        delay = Math.random() * 1200 + 1500;
+      } else if (currentWave === 'BURST') {
+        count = Math.floor(Math.random() * 4) + 5; // 5~8 個大連擊波！
+        delay = Math.random() * 1500 + 1800;
+      }
+
+      // 後期整體發射間隔稍微加快
+      delay = delay * (1 - progress * 0.3);
+
+      setTimeout(() => {
+        if (!isGameOver) {
+          for (let i = 0; i < count; i++) {
+            setTimeout(() => spawnItem(), i * 150);
+          }
+        }
+        scheduleNextSpawn();
+      }, delay);
+    }
+
+    // 啟動遊戲
+    startTimer();
+    triggerInitialBurst();
+    scheduleNextSpawn();
+    gameLoop();
+  </script>
+</body>
+</html>
