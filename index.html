@@ -55,13 +55,13 @@
     .timer-display {
       color: #ffda79;
     }
-    .game-over-screen {
+    .overlay-screen {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.85);
+      background: rgba(0, 0, 0, 0.88);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -70,24 +70,35 @@
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.3s ease;
+      text-align: center;
+      padding: 30px;
     }
-    .game-over-screen.active {
+    .overlay-screen.active {
       opacity: 1;
       pointer-events: auto;
     }
-    .game-over-screen h1 {
+    .overlay-screen h1 {
       font-size: 52px;
       margin: 0;
-      color: #2ed573;
-      text-shadow: 0 0 15px rgba(46,213,115,0.6);
+      color: #ffda79;
+      text-shadow: 0 0 15px rgba(255,218,121,0.6);
     }
-    .game-over-screen p {
-      font-size: 26px;
-      margin: 0;
+    .overlay-screen p {
+      font-size: 20px;
+      margin: 5px 0;
+      color: #dcdde1;
+      line-height: 1.6;
+    }
+    .rules-box {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 20px 30px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      margin: 10px 0;
     }
     .btn {
-      padding: 14px 36px;
-      font-size: 22px;
+      padding: 14px 40px;
+      font-size: 24px;
       font-weight: bold;
       color: #fff;
       background: #2ed573;
@@ -96,6 +107,7 @@
       cursor: pointer;
       box-shadow: 0 5px 15px rgba(46,213,115,0.4);
       transition: transform 0.1s, background 0.2s;
+      margin-top: 10px;
     }
     .btn:hover {
       background: #26af5f;
@@ -115,9 +127,22 @@
       </div>
     </div>
 
-    <div class="game-over-screen" id="gameOverScreen">
-      <h1>時間到！</h1>
-      <p id="finalScore">最終得分: 0</p>
+    <!-- 開始選單 -->
+    <div class="overlay-screen active" id="startMenuScreen">
+      <h1>🗡️ 切水果大作戰</h1>
+      <div class="rules-box">
+        <p>⏱️ **3 分鐘挑戰**：時間內挑戰最高分！</p>
+        <p>🍎 **水果波浪**：開局爆發，多/少交替輪替！</p>
+        <p>⚡ **Combo 獎勵**：一刀切 3 個以上水果獲得額外加分！</p>
+        <p>💣 **注意炸彈**：切到炸彈會扣除 20 分！</p>
+      </div>
+      <button class="btn" onclick="startGame()">開始遊戲</button>
+    </div>
+
+    <!-- 結算畫面 -->
+    <div class="overlay-screen" id="gameOverScreen">
+      <h1 style="color: #2ed573;">時間到！</h1>
+      <p id="finalScore" style="font-size: 28px; font-weight: bold;">最終得分: 0</p>
       <button class="btn" onclick="resetGame()">再玩一次</button>
     </div>
   </div>
@@ -131,7 +156,9 @@
     let totalTime = 180; // 3 分鐘
     let timeRemaining = totalTime;
     let isGameOver = false;
+    let isGameStarted = false;
     let timerInterval = null;
+    let spawnTimeout = null;
 
     // 水果設定
     const FRUIT_TYPES = [
@@ -326,7 +353,7 @@
     }
 
     function spawnItem() {
-      if (isGameOver) return;
+      if (isGameOver || !isGameStarted) return;
 
       const progress = getProgress();
       const isBomb = Math.random() < 0.15;
@@ -419,7 +446,7 @@
     }
 
     function update() {
-      if (isGameOver) return;
+      if (isGameOver || !isGameStarted) return;
 
       // 粒子
       for (let i = particles.length - 1; i >= 0; i--) {
@@ -592,7 +619,7 @@
     function startTimer() {
       clearInterval(timerInterval);
       timerInterval = setInterval(() => {
-        if (!isGameOver) {
+        if (!isGameOver && isGameStarted) {
           timeRemaining--;
           updateTimerDisplay();
 
@@ -613,6 +640,7 @@
     function endGame() {
       isGameOver = true;
       clearInterval(timerInterval);
+      clearTimeout(spawnTimeout);
       document.getElementById('finalScore').innerText = `最終得分: ${score}`;
       document.getElementById('gameOverScreen').classList.add('active');
     }
@@ -622,6 +650,12 @@
       for (let i = 0; i < initialCount; i++) {
         setTimeout(() => spawnItem(), i * 120);
       }
+    }
+
+    function startGame() {
+      document.getElementById('startMenuScreen').classList.remove('active');
+      isGameStarted = true;
+      resetGame();
     }
 
     function resetGame() {
@@ -641,6 +675,7 @@
       
       startTimer();
       triggerInitialBurst();
+      scheduleNextSpawn();
     }
 
     function handleMove(x, y) {
@@ -666,9 +701,10 @@
 
     // 隨機波浪輪替系統 (多/少/多/狂暴 交替)
     function scheduleNextSpawn() {
+      if (isGameOver || !isGameStarted) return;
+      clearTimeout(spawnTimeout);
+
       const progress = getProgress();
-      
-      // 隨機選擇波浪模式
       const waveTypes = ['LIGHT', 'MEDIUM', 'HEAVY', 'BURST'];
       const currentWave = waveTypes[Math.floor(Math.random() * waveTypes.length)];
 
@@ -685,15 +721,14 @@
         count = Math.floor(Math.random() * 3) + 4; // 4~6 個
         delay = Math.random() * 1200 + 1500;
       } else if (currentWave === 'BURST') {
-        count = Math.floor(Math.random() * 4) + 5; // 5~8 個大連擊波！
+        count = Math.floor(Math.random() * 4) + 5; // 5~8 個
         delay = Math.random() * 1500 + 1800;
       }
 
-      // 後期整體發射間隔稍微加快
       delay = delay * (1 - progress * 0.3);
 
-      setTimeout(() => {
-        if (!isGameOver) {
+      spawnTimeout = setTimeout(() => {
+        if (!isGameOver && isGameStarted) {
           for (let i = 0; i < count; i++) {
             setTimeout(() => spawnItem(), i * 150);
           }
@@ -701,6 +736,12 @@
         scheduleNextSpawn();
       }, delay);
     }
+
+    // 啟動繪製迴圈 (預設停留在選單)
+    gameLoop();
+  </script>
+</body>
+</html>
 
     // 啟動遊戲
     startTimer();
